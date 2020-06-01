@@ -2,9 +2,11 @@
 	<div>
 		<div id="map">
 		</div>
-		<div class="filter-ctrl">
-			<input id="filter-input" type="text" name="filter" placeholder="Filter by name"
-			/>
+		<div class="map-overlay">
+			<fieldset>
+				<input id="feature-filter" type="text" placeholder="Filter results by name" />
+			</fieldset>
+			<div id="feature-listing" class="listing"></div>
 		</div>
 	</div>
 </template>
@@ -32,146 +34,176 @@ export default {
 		displayMap () {
 			mapboxgl.accessToken = 'pk.eyJ1IjoidHphcnVtYW5nIiwiYSI6ImNrYXR1eW1wdDBmbHozMW40ajY5OWcyY2cifQ.Ble7shyATN9nhptHYIV83g';
 
-			var places = {
-				'type': 'FeatureCollection',
-				'features': [
-					{
-						'type': 'Feature',
-						'properties': {
-							'icon': 'theatre'
-						},
-						'geometry': {
-							'type': 'Point',
-							'coordinates': [-77.038659, 38.931567]
-						}
-					},
-					{
-						'type': 'Feature',
-						'properties': {
-						'icon': 'theatre'
-						},
-						'geometry': {
-							'type': 'Point',
-							'coordinates': [-77.003168, 38.894651]
-						}
-					},
-					{
-						'type': 'Feature',
-						'properties': {
-							'icon': 'bar'
-						},
-						'geometry': {
-							'type': 'Point',
-							'coordinates': [-77.090372, 38.881189]
-						}
-					},
-					{
-						'type': 'Feature',
-						'properties': {
-							'icon': 'bicycle'
-						},
-						'geometry': {
-							'type': 'Point',
-							'coordinates': [-77.052477, 38.943951]
-						}
-					},
-					{
-						'type': 'Feature',
-						'properties': {
-							'icon': 'music'
-						},
-						'geometry': {
-							'type': 'Point',
-							'coordinates': [-77.031706, 38.914581]
-						}
-					},
-					{
-						'type': 'Feature',
-						'properties': {
-							'icon': 'music'
-						},
-						'geometry': {
-							'type': 'Point',
-							'coordinates': [-77.020945, 38.878241]
-						}
-					},
-					{
-						'type': 'Feature',
-						'properties': {
-							'icon': 'music'
-						},
-						'geometry': {
-							'type': 'Point',
-							'coordinates': [-77.007481, 38.876516]
-						}
-					}
-				]
-			};
-
-
-			var layerIDs = []; // Will contain a list used to filter against.
-			var filterInput = document.getElementById('filter-input');
 			var map = new mapboxgl.Map({
 				container: 'map',
-				style: 'mapbox://styles/mapbox/light-v10',
-				center: [-77.04, 38.907],
-				zoom: 11.15
+				style: 'mapbox://styles/mapbox/streets-v11',
+				center: [-98, 38.88],
+				maxZoom: 5,
+				minZoom: 1,
+				zoom: 3
 			});
 
-			map.on('load', function() {
-				// Add a GeoJSON source containing place coordinates and information.
-				map.addSource('places', {
-					'type': 'geojson',
-					'data': places
-				});
+			// Holds visible airport features for filtering
+			var airports = [];
 
-				places.features.forEach(function(feature) {
-					var symbol = feature.properties['icon'];
-					var layerID = 'poi-' + symbol;
+			// Create a popup, but don't add it to the map yet.
+			var popup = new mapboxgl.Popup({
+				closeButton: false
+			});
 
-					// Add a layer for this symbol type if it hasn't been added already.
-					if (!map.getLayer(layerID)) {
-						map.addLayer({
-							'id': layerID,
-							'type': 'symbol',
-							'source': 'places',
-							'layout': {
-								'icon-image': symbol + '-15',
-								'icon-allow-overlap': true,
-								'text-field': symbol,
-								'text-font': [
-									'Open Sans Bold',
-									'Arial Unicode MS Bold'
-								],
-								'text-size': 11,
-								'text-transform': 'uppercase',
-								'text-letter-spacing': 0.05,
-								'text-offset': [0, 1.5]
-							},
-							'paint': {
-								'text-color': '#202',
-								'text-halo-color': '#fff',
-								'text-halo-width': 2
-							},
-							'filter': ['==', 'icon', symbol]
-						});
+			var filterEl = document.getElementById('feature-filter');
+			var listingEl = document.getElementById('feature-listing');
 
-						layerIDs.push(layerID);
+			function renderListings(features) {
+				var empty = document.createElement('p');
+				// Clear any existing listings
+				listingEl.innerHTML = '';
+				if (features.length) {
+					features.forEach(function(feature) {
+						var prop = feature.properties;
+						var item = document.createElement('a');
+						item.href = prop.wikipedia;
+						item.target = '_blank';
+						item.textContent = prop.name + ' (' + prop.abbrev + ')';
+						item.addEventListener('mouseover', function() {
+							// Highlight corresponding feature on the map
+							popup
+								.setLngLat(feature.geometry.coordinates)
+								.setText(
+									feature.properties.name +
+										' (' +
+										feature.properties.abbrev +
+										')'
+									)
+									.addTo(map);
+							});
+						listingEl.appendChild(item);
+					});
+
+					// Show the filter input
+					filterEl.parentNode.style.display = 'block';
+				} else if (features.length === 0 && filterEl.value !== '') {
+					empty.textContent = 'No results found';
+					listingEl.appendChild(empty);
+				} else {
+					empty.textContent = 'Drag the map to populate results';
+					listingEl.appendChild(empty);
+
+					// Hide the filter input
+					filterEl.parentNode.style.display = 'none';
+
+					// remove features filter
+					map.setFilter('points', ['has', 'abbrev']);
+				}
+			}
+
+			function normalize(string) {
+				return string.trim().toLowerCase();
+			}
+
+			function getUniqueFeatures(array, comparatorProperty) {
+				var existingFeatureKeys = {};
+				// Because features come from tiled vector data, feature geometries may be split
+				// or duplicated across tile boundaries and, as a result, features may appear
+				// multiple times in query results.
+				var uniqueFeatures = array.filter(function(el) {
+					if (existingFeatureKeys[el.properties[comparatorProperty]]) {
+					return false;
+					} else {
+						existingFeatureKeys[el.properties[comparatorProperty]] = true;
+						return true;
 					}
 				});
 
-				filterInput.addEventListener('keyup', function(e) {
-					// If the input value matches a layerID set
-					// it's visibility to 'visible' or else hide it.
-					var value = e.target.value.trim().toLowerCase();
-					layerIDs.forEach(function(layerID) {
-						map.setLayoutProperty(
-							layerID,
-							'visibility',
-							layerID.indexOf(value) > -1 ? 'visible' : 'none'
-						);
-					});
+				return uniqueFeatures;
+			}
+
+			map.on('load', function() {
+				map.addSource('airports', {
+					'type': 'vector',
+					'url': 'mapbox://mapbox.04w69w5j'
 				});
+				map.addLayer({
+					'id': 'points',
+					'source': 'airports',
+					'source-layer': 'ne_10m_airports',
+					'type': 'symbol',
+					'layout': {
+						'icon-image': 'airport-15',
+						'icon-padding': 0,
+						'icon-allow-overlap': true
+					}
+				});
+
+				map.on('moveend', function() {
+					var features = map.queryRenderedFeatures({ layers: ['points'] });
+
+					if (features) {
+						var uniqueFeatures = getUniqueFeatures(features, 'iata_code');
+						// Populate features for the listing overlay.
+						renderListings(uniqueFeatures);
+
+						// Clear the input container
+						filterEl.value = '';
+
+						// Store the current features in sn `airports` variable to
+						// later use for filtering on `keyup`.
+						airports = uniqueFeatures;
+					}
+				});
+
+				map.on('mousemove', 'points', function(e) {
+					// Change the cursor style as a UI indicator.
+					map.getCanvas().style.cursor = 'pointer';
+
+					// Populate the popup and set its coordinates based on the feature.
+					var feature = e.features[0];
+					popup
+						.setLngLat(feature.geometry.coordinates)
+						.setText(
+							feature.properties.name +
+								' (' +
+								feature.properties.abbrev +
+								')'
+						)
+						.addTo(map);
+				});
+
+				map.on('mouseleave', 'points', function() {
+					map.getCanvas().style.cursor = '';
+					popup.remove();
+				});
+
+				filterEl.addEventListener('keyup', function(e) {
+					var value = normalize(e.target.value);
+
+					// Filter visible features that don't match the input value.
+					var filtered = airports.filter(function(feature) {
+						var name = normalize(feature.properties.name);
+						var code = normalize(feature.properties.abbrev);
+						return name.indexOf(value) > -1 || code.indexOf(value) > -1;
+					});
+
+					// Populate the sidebar with filtered results
+					renderListings(filtered);
+
+					// Set the filter to populate features into the layer.
+					if (filtered.length) {
+						map.setFilter('points', [
+							'match',
+							['get', 'abbrev'],
+							filtered.map(function(feature) {
+								return feature.properties.abbrev;
+							}),
+							true,
+							false
+						]);
+					}
+				});
+
+				// Call this function on initialization
+				// passing an empty array to render an empty state
+				renderListings([]);
 			});
 		}
 	}
@@ -179,28 +211,65 @@ export default {
 </script>
 
 <style>
-	#map { 
-		position: absolute; 
-		top: 0; 
-		bottom: 0; 
-		width: 100%; }
-	.filter-ctrl {
+	#map {
         position: absolute;
-        top: 10px;
-        right: 10px;
-        z-index: 1;
+        left: 25%;
+        top: 0;
+        bottom: 0;
+        width: 75%;
+    }
+	.map-overlay {
+        position: absolute;
+        width: 25%;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        font: 12px/20px 'Helvetica Neue', Arial, Helvetica, sans-serif;
+        background-color: #fff;
+        max-height: 100%;
+        overflow: hidden;
     }
 
-    .filter-ctrl input[type='text'] {
-        font: 12px/20px 'Helvetica Neue', Arial, Helvetica, sans-serif;
-        width: 100%;
-        border: 0;
-        background-color: #fff;
-        margin: 0;
-        color: rgba(0, 0, 0, 0.5);
+    .map-overlay fieldset {
+        display: none;
+        background: #ddd;
+        border: none;
         padding: 10px;
-        box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+        margin: 0;
+    }
+
+    .map-overlay input {
+        display: block;
+        border: none;
+        width: 100%;
         border-radius: 3px;
-        width: 180px;
+        padding: 10px;
+        margin: 0;
+        box-sizing: border-box;
+    }
+
+    .map-overlay .listing {
+        overflow: auto;
+        max-height: 100%;
+    }
+
+    .map-overlay .listing > * {
+        display: block;
+        padding: 5px 10px;
+        margin: 0;
+    }
+
+    .map-overlay .listing a {
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+        color: #404;
+        text-decoration: none;
+    }
+
+    .map-overlay .listing a:last-child {
+        border: none;
+    }
+
+    .map-overlay .listing a:hover {
+        background: #f0f0f0;
     }
 </style>
